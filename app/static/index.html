@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blackbox: incident copilot that remembers every outage</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=Spline+Sans+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#E9ECEF; --card:#F8F9FA; --ink:#0F1A2B; --muted:#5A6577; --line:#CDD3DB;
+  --memory:#2F4BFF; --memory-soft:#E4E9FF; --memory-line:#B5C0FF;
+  --alert:#C93A2B; --amber:#B97A0A; --ok:#177A50;
+  --ui:'Bricolage Grotesque',system-ui,-apple-system,'Segoe UI',sans-serif;
+  --mono:'Spline Sans Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--ui);font-size:15px;line-height:1.5}
+button,input,select,textarea{font:inherit;color:inherit}
+:focus-visible{outline:3px solid var(--memory);outline-offset:2px}
+.wrap{max-width:1320px;margin:0 auto;padding:0 20px 48px}
+
+/* top bar */
+header{display:flex;flex-wrap:wrap;align-items:center;gap:16px 28px;padding:18px 0 14px;border-bottom:2px solid var(--ink)}
+.brand{font-weight:800;font-size:28px;letter-spacing:-.02em;margin:0}
+.brand small{display:block;font-weight:400;font-size:13px;color:var(--muted);letter-spacing:0}
+.mode{display:inline-flex;border:2px solid var(--ink);border-radius:999px;padding:3px;background:var(--card)}
+.mode button{border:0;background:transparent;padding:8px 18px;border-radius:999px;cursor:pointer;font-weight:600}
+.mode button[aria-pressed=true]{background:var(--ink);color:#fff}
+.mode button[data-mode=on][aria-pressed=true]{background:var(--memory)}
+.spacer{flex:1}
+.stat{font-size:13px;color:var(--muted)}
+.stat b{color:var(--ink);font-size:18px;margin-right:4px}
+.btn{border:2px solid var(--ink);background:var(--card);padding:8px 14px;border-radius:8px;cursor:pointer;font-weight:600}
+.btn:hover{background:#fff}
+.btn.primary{background:var(--ink);color:#fff}
+.btn.primary:hover{background:#1c2b45}
+.btn.mem{background:var(--memory);border-color:var(--memory);color:#fff}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.link{background:none;border:0;color:var(--muted);text-decoration:underline;cursor:pointer;padding:0;font-size:13px}
+
+.banner{margin:12px 0 0;padding:10px 14px;border-radius:8px;background:#FBE9E7;border:1px solid #E7A69D;color:#7A1F14;display:none}
+.banner.show{display:block}
+
+/* layout */
+main{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:22px;margin-top:22px;align-items:start}
+@media (max-width:960px){main{grid-template-columns:1fr}}
+section.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:18px}
+h2{margin:0 0 12px;font-size:18px;font-weight:800;letter-spacing:-.01em}
+label{display:block;font-size:13px;font-weight:600;margin:10px 0 4px;color:var(--muted)}
+input,select,textarea{width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:#fff}
+textarea{min-height:64px;resize:vertical}
+.row{display:grid;grid-template-columns:1fr 110px;gap:10px}
+.actions{display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap}
+.mono{font-family:var(--mono);font-size:12.5px}
+
+/* answer */
+.answer h3{margin:0 0 4px;font-size:17px}
+.badge{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12.5px;font-weight:700;color:#fff}
+.badge.high{background:var(--ok)} .badge.medium{background:var(--amber)} .badge.low{background:var(--alert)}
+.answer .why{color:var(--muted);font-size:13.5px;margin:6px 0 12px}
+.answer h4{margin:14px 0 4px;font-size:14px}
+.answer ol,.answer ul{margin:0;padding-left:20px}
+.answer li{margin:4px 0}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
+.chip{font-family:var(--mono);font-size:12px;border:1px solid var(--memory);background:var(--memory-soft);color:var(--memory);padding:2px 8px;border-radius:6px;cursor:default}
+.chip:hover,.chip:focus{background:var(--memory);color:#fff}
+.contrast{margin-top:14px;padding:10px 12px;border-left:4px solid var(--line);background:#fff;font-size:13.5px}
+.contrast b{display:block;margin-bottom:2px}
+.meta{margin-top:12px;color:var(--muted);font-size:12.5px}
+.empty{color:var(--muted);padding:6px 0}
+
+/* memory panel: the one bold place */
+.memory{background:var(--memory-soft);border:2px solid var(--memory);border-radius:14px;padding:18px 20px;margin-bottom:18px}
+.memory h2{color:var(--memory)}
+.memory .sub{color:#33418f;font-size:13.5px;margin:-6px 0 12px}
+.timeline{background:#fff;border:1px solid var(--memory-line);border-radius:10px;padding:8px 10px 2px;margin-bottom:14px}
+.timeline svg{width:100%;height:auto;display:block}
+.hit{background:#fff;border:1px solid var(--memory-line);border-radius:10px;padding:12px 14px;margin-bottom:10px;transition:box-shadow .15s,border-color .15s}
+.hit.lit{border-color:var(--memory);box-shadow:0 0 0 3px var(--memory-line)}
+.hit header{display:flex;align-items:baseline;gap:10px;border:0;padding:0;margin:0 0 6px}
+.hit .id{font-family:var(--mono);font-weight:500;color:var(--memory)}
+.hit .date{color:var(--muted);font-size:12.5px}
+.bar{margin-left:auto;display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+.bar i{display:block;width:90px;height:6px;background:#E1E6FF;border-radius:4px;overflow:hidden}
+.bar i span{display:block;height:100%;background:var(--memory)}
+.hit pre{margin:0;white-space:pre-wrap;font-family:var(--mono);font-size:12px;line-height:1.5;color:#26324d;max-height:150px;overflow:auto}
+.memory .empty{color:#33418f}
+
+/* patterns */
+.patterns{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-top:4px}
+.patterns .body{max-width:78ch}
+.patterns .body p{margin:6px 0}.patterns .body ul{margin:6px 0;padding-left:20px}
+.patterns .tag{font-size:12.5px;color:var(--muted)}
+
+.toast{position:fixed;right:18px;bottom:18px;background:var(--ink);color:#fff;padding:10px 16px;border-radius:8px;opacity:0;pointer-events:none;transition:opacity .2s}
+.toast.show{opacity:1}
+.progress{height:4px;background:var(--line);border-radius:4px;overflow:hidden;width:120px;display:none}
+.progress span{display:block;height:100%;width:0;background:var(--memory);transition:width .3s}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1 class="brand">Blackbox<small>The on-call teammate that never forgets an outage</small></h1>
+    <div class="mode" role="group" aria-label="Memory mode">
+      <button data-mode="off" aria-pressed="false" id="modeOff">Without memory</button>
+      <button data-mode="on" aria-pressed="true" id="modeOn">With memory</button>
+    </div>
+    <div class="spacer"></div>
+    <div class="stat" aria-live="polite"><b id="memCount">0</b><span id="memLabel">memories in bank</span></div>
+    <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">
+      <button class="btn mem" id="seedBtn">Load 6 months of history</button>
+      <div class="progress" id="seedProg"><span></span></div>
+      <button class="link" id="resetBtn">Reset memory</button>
+    </div>
+  </header>
+  <div class="banner" id="banner" role="alert"></div>
+
+  <main>
+    <div>
+      <section class="card" aria-labelledby="incHead">
+        <h2 id="incHead">Incident</h2>
+        <label for="demoSel">Load a scenario</label>
+        <select id="demoSel"></select>
+        <div class="row">
+          <div><label for="fService">Service</label><input id="fService"></div>
+          <div><label for="fSev">Severity</label><select id="fSev"><option>SEV1</option><option>SEV2</option><option>SEV3</option></select></div>
+        </div>
+        <label for="fTitle">Title</label><input id="fTitle">
+        <label for="fSymptoms">Symptoms</label><textarea id="fSymptoms"></textarea>
+        <label for="fError">Error signature</label><input id="fError" class="mono">
+        <div class="actions">
+          <button class="btn primary" id="analyzeBtn">Analyze incident</button>
+          <span class="stat" id="analyzeState"></span>
+        </div>
+      </section>
+
+      <section class="card answer" aria-live="polite" aria-labelledby="ansHead">
+        <h2 id="ansHead">Blackbox says</h2>
+        <div id="answer"><p class="empty">Pick a scenario and select Analyze incident. Run it once without memory, then again with memory, and compare.</p></div>
+      </section>
+
+      <section class="card" id="resolveCard" style="display:none" aria-labelledby="resHead">
+        <h2 id="resHead">Resolved? Teach Blackbox</h2>
+        <label for="rRoot">Confirmed root cause</label><textarea id="rRoot"></textarea>
+        <label for="rFix">Fix that worked</label><textarea id="rFix"></textarea>
+        <div class="row" style="grid-template-columns:1fr 110px">
+          <div><label for="rOwner">Resolved by</label><input id="rOwner" value="priya.nair"></div>
+          <div><label for="rMin">Minutes</label><input id="rMin" type="number" value="35"></div>
+        </div>
+        <div class="actions"><button class="btn mem" id="resolveBtn">Save postmortem to memory</button></div>
+      </section>
+    </div>
+
+    <div>
+      <section class="memory" aria-labelledby="memHead" aria-live="polite">
+        <h2 id="memHead">What memory contributed</h2>
+        <p class="sub" id="memSub">Recalled from Hindsight before the model wrote a single word.</p>
+        <div class="timeline"><svg id="tl" viewBox="0 0 800 120" role="img" aria-label="Timeline of remembered incidents"></svg></div>
+        <div id="hits"><p class="empty">Nothing recalled yet.</p></div>
+      </section>
+    </div>
+  </main>
+
+  <section class="patterns" aria-labelledby="patHead">
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+      <h2 id="patHead" style="margin:0">Patterns Blackbox learned on its own</h2>
+      <span class="tag" id="patTag"></span>
+      <div class="spacer"></div>
+      <button class="btn" id="patBtn">Refresh patterns</button>
+    </div>
+    <div class="body" id="patBody"><p class="empty">Load history first. Hindsight consolidates memories in the background, so patterns appear after a minute.</p></div>
+  </section>
+</div>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const S = { memoryOn: true, demo: [], timeline: [], last: null, cold: {}, currentDate: null };
+
+async function api(path, opts) {
+  const r = await fetch(path, opts && opts.body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(opts.body) } : opts);
+  if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m; } catch (e) {} throw new Error(m); }
+  return r.json();
+}
+function toast(t) { const el = $('#toast'); el.textContent = t; el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 2600); }
+function banner(t) { const b = $('#banner'); b.textContent = t || ''; b.classList.toggle('show', !!t); }
+function md(t) { // tiny markdown: bold, bullets, paragraphs. Input is escaped first.
+  const lines = esc(t || '').split('\n'); let out = '', inList = false;
+  for (const l of lines) {
+    const b = l.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    const m = b.match(/^\s*(?:[-*]|\d+\.)\s+(.*)/);
+    if (m) { if (!inList) { out += '<ul>'; inList = true; } out += '<li>' + m[1] + '</li>'; }
+    else { if (inList) { out += '</ul>'; inList = false; } if (b.trim()) out += '<p>' + b.replace(/^#+\s*/, '') + '</p>'; }
+  }
+  return out + (inList ? '</ul>' : '');
+}
+
+/* ---------- header / status ---------- */
+async function refreshHealth() {
+  try {
+    const h = await api('/api/health');
+    $('#memCount').textContent = h.memory.memory_units;
+    $('#memLabel').textContent = `memories in "${h.memory.bank_id}" (${h.memory.backend})`;
+    if (h.startup_error) banner('Memory backend not reachable: ' + h.startup_error);
+    else if (h.llm_mode !== 'mock' && !h.llm_key_present) banner('GROQ_API_KEY is missing, so answers will be built directly from recalled memory. Add the key to .env and restart.');
+    else banner('');
+  } catch (e) { banner('Cannot reach the Blackbox server: ' + e.message); }
+}
+function setMode(on) {
+  S.memoryOn = on;
+  $('#modeOn').setAttribute('aria-pressed', on); $('#modeOff').setAttribute('aria-pressed', !on);
+}
+$('#modeOn').onclick = () => setMode(true);
+$('#modeOff').onclick = () => setMode(false);
+
+/* ---------- scenarios ---------- */
+function currentIncident() {
+  const sel = S.demo.find(d => d.id === $('#demoSel').value);
+  return { id: sel && sel.id, date: sel && sel.date, service: $('#fService').value.trim(), severity: $('#fSev').value,
+    title: $('#fTitle').value.trim(), symptoms: $('#fSymptoms').value.trim(), error_signature: $('#fError').value.trim() };
+}
+function loadScenario(id) {
+  const d = S.demo.find(x => x.id === id); if (!d) return;
+  $('#fService').value = d.service; $('#fSev').value = d.severity; $('#fTitle').value = d.title;
+  $('#fSymptoms').value = d.symptoms; $('#fError').value = d.error_signature; S.currentDate = d.date;
+}
+$('#demoSel').onchange = e => loadScenario(e.target.value);
+
+/* ---------- analyze ---------- */
+$('#analyzeBtn').onclick = async () => {
+  const inc = currentIncident();
+  if (!inc.service || !inc.title) { toast('Add a service and title first'); return; }
+  const btn = $('#analyzeBtn'); btn.disabled = true; $('#analyzeState').textContent = S.memoryOn ? 'Recalling, then thinking...' : 'Thinking without memory...';
+  try {
+    const res = await api('/api/analyze', { body: { incident: inc, use_memory: S.memoryOn } });
+    S.last = res;
+    if (res.mode === 'cold') S.cold[inc.title] = res.diagnosis;
+    renderAnswer(res, inc); renderMemory(res, inc);
+    $('#resolveCard').style.display = 'block';
+    const d = res.diagnosis;
+    $('#rRoot').value = d.likely_root_cause || ''; $('#rFix').value = (d.recommended_steps || [])[0] || '';
+    if (d.suggested_owner) $('#rOwner').value = d.suggested_owner;
+    $('#analyzeState').textContent = '';
+  } catch (e) { banner(e.message); $('#analyzeState').textContent = ''; }
+  btn.disabled = false;
+};
+
+function renderAnswer(res, inc) {
+  const d = res.diagnosis, conf = (d.confidence || 'low').toLowerCase();
+  const chips = (d.matched_incidents || []).map(m => `<span class="chip" tabindex="0" data-id="${esc(m.id)}" title="${esc(m.why)}">${esc(m.id)} ${esc(m.similarity || '')}</span>`).join('');
+  const steps = (d.recommended_steps || []).map(s => `<li>${esc(s)}</li>`).join('');
+  const avoid = (d.avoid || []).map(s => `<li>${esc(s)}</li>`).join('');
+  const cold = S.cold[inc.title];
+  const contrast = res.mode === 'warm' && cold ? `<div class="contrast"><b>Without memory it said</b>${esc((cold.recommended_steps || [])[0] || 'generic steps')} Confidence ${esc(cold.confidence)}, no matched incidents, no owner.</div>` : '';
+  $('#answer').innerHTML = `
+    <h3>${esc(d.summary)} <span class="badge ${conf}">${esc(conf)} confidence</span></h3>
+    <p class="why">${esc(d.confidence_reason)}</p>
+    <h4>Likely root cause</h4><p>${esc(d.likely_root_cause)}</p>
+    ${chips ? `<h4>Matches in memory</h4><div class="chips">${chips}</div>` : (res.mode === 'warm' ? '<h4>Matches in memory</h4><p class="empty">No similar past incident. Treat this as new and record it when solved.</p>' : '')}
+    <h4>Do this now</h4><ol>${steps}</ol>
+    ${avoid ? `<h4>Skip these (already tried before)</h4><ul>${avoid}</ul>` : ''}
+    ${d.suggested_owner ? `<h4>Ask</h4><p>${esc(d.suggested_owner)}, who fixed the closest past incident.</p>` : ''}
+    ${contrast}
+    <p class="meta">${res.mode === 'warm' ? 'With memory' : 'Without memory'} · ${esc(res.meta.model)} · ${res.meta.total_ms} ms${res.meta.hallucinated_ids_removed.length ? ' · removed unverified ids: ' + esc(res.meta.hallucinated_ids_removed.join(', ')) : ''}</p>`;
+  document.querySelectorAll('.chip').forEach(c => {
+    const on = () => { const el = document.getElementById('hit-' + c.dataset.id); if (el) el.classList.add('lit'); };
+    const off = () => document.querySelectorAll('.hit.lit').forEach(h => h.classList.remove('lit'));
+    c.onmouseenter = on; c.onmouseleave = off; c.onfocus = on; c.onblur = off;
+  });
+}
+
+function renderMemory(res, inc) {
+  const t = res.memory_trace;
+  if (res.mode === 'cold') {
+    $('#memSub').textContent = 'Memory is switched off for this run, so Blackbox is a generic assistant.';
+    $('#hits').innerHTML = '<p class="empty">Nothing recalled. Switch to "With memory" and analyze again to see what changes.</p>';
+    drawTimeline([], inc.date || S.currentDate); return;
+  }
+  const noMatch = t.hits.length && !(res.diagnosis.matched_incidents || []).length;
+  $('#memSub').textContent = noMatch
+    ? `Closest memories are shown below, but none was a real match, so Blackbox did not force one (${t.recall_ms} ms).`
+    : `Recalled ${t.hits.length} past incident${t.hits.length === 1 ? '' : 's'} in ${t.recall_ms} ms from ${t.backend}, before the model wrote a single word.`;
+  if (!t.hits.length) { $('#hits').innerHTML = '<p class="empty">Nothing in memory resembles this incident. Blackbox will say so instead of guessing.</p>'; }
+  else {
+    const max = Math.max(...t.hits.map(h => h.score), 0.0001);
+    $('#hits').innerHTML = t.hits.map(h => `
+      <article class="hit" id="hit-${esc(h.incident_id)}">
+        <header><span class="id">${esc(h.incident_id)}</span><span class="date">${h.occurred ? esc(String(h.occurred).slice(0, 10)) : ''}</span>
+          <span class="bar" title="relevance">${(h.score).toFixed(2)}<i><span style="width:${Math.round(100 * h.score / max)}%"></span></i></span></header>
+        <pre>${esc(h.excerpt)}</pre>
+      </article>`).join('');
+  }
+  drawTimeline(t.hits.map(h => h.incident_id), inc.date || S.currentDate);
+}
+
+/* ---------- timeline ---------- */
+async function loadTimeline() { try { S.timeline = (await api('/api/timeline')).incidents; } catch (e) {} drawTimeline([], S.currentDate); }
+function drawTimeline(litIds, nowDate) {
+  const svg = $('#tl'), W = 800, pad = 28, y = 64;
+  const times = S.timeline.map(i => Date.parse(i.date)).filter(Number.isFinite);
+  const now = Date.parse(nowDate || '') || Date.now();
+  if (!times.length) { svg.innerHTML = `<text x="${W / 2}" y="64" text-anchor="middle" fill="#5A6577" font-size="14">No incidents remembered yet</text>`; return; }
+  const t0 = Math.min(...times, now) - 10 * 864e5, t1 = Math.max(...times, now) + 10 * 864e5;
+  const X = t => pad + (W - 2 * pad) * (t - t0) / (t1 - t0);
+  let out = `<line x1="${pad}" x2="${W - pad}" y1="${y}" y2="${y}" stroke="#B5C0FF" stroke-width="2"/>`;
+  const d0 = new Date(t0); d0.setUTCDate(1); d0.setUTCMonth(d0.getUTCMonth() + 1);
+  for (let d = d0; d.getTime() < t1; d.setUTCMonth(d.getUTCMonth() + 1)) {
+    const x = X(d.getTime());
+    out += `<line x1="${x}" x2="${x}" y1="${y - 5}" y2="${y + 5}" stroke="#B5C0FF"/><text x="${x}" y="${y + 22}" text-anchor="middle" font-size="11" fill="#5A6577">${d.toLocaleString('en', { month: 'short', timeZone: 'UTC' })}</text>`;
+  }
+  const lit = new Set(litIds);
+  S.timeline.forEach(i => {
+    const x = X(Date.parse(i.date)), on = lit.has(i.id);
+    out += on
+      ? `<line x1="${x}" x2="${X(now)}" y1="${y}" y2="${y}" stroke="#2F4BFF" stroke-width="1.5" stroke-dasharray="3 3" opacity=".55"/><circle cx="${x}" cy="${y}" r="8" fill="#2F4BFF"/><text x="${x}" y="${y - 16}" text-anchor="middle" font-size="11" font-weight="600" fill="#2F4BFF" font-family="monospace">${esc(i.id.replace('INC-', ''))}</text>`
+      : `<circle cx="${x}" cy="${y}" r="4" fill="#9AA6C9"/>`;
+  });
+  out += `<path d="M${X(now)} ${y - 4} l-7 -14 h14 z" fill="#C93A2B"/><text x="${X(now)}" y="${y - 24}" text-anchor="middle" font-size="11" fill="#C93A2B" font-weight="600">now</text>`;
+  svg.innerHTML = out;
+}
+
+/* ---------- resolve / teach ---------- */
+$('#resolveBtn').onclick = async () => {
+  const inc = currentIncident(); if (!$('#rRoot').value.trim() || !$('#rFix').value.trim()) { toast('Add a root cause and a fix'); return; }
+  const btn = $('#resolveBtn'); btn.disabled = true;
+  try {
+    const live = { ...inc, id: undefined, date: new Date().toISOString() };
+    const r = await api('/api/resolve', { body: { incident: live, root_cause: $('#rRoot').value, fix: $('#rFix').value, owner: $('#rOwner').value, minutes_to_resolve: +$('#rMin').value || null } });
+    toast(`Saved ${r.incident_id}. Blackbox will remember this next time.`);
+    await refreshHealth(); await loadTimeline(); loadPatterns(false);
+  } catch (e) { banner(e.message); }
+  btn.disabled = false;
+};
+
+/* ---------- seed / reset ---------- */
+async function runSeed(reset) {
+  const btn = $('#seedBtn'), prog = $('#seedProg'); btn.disabled = true; prog.style.display = 'block';
+  try {
+    await api('/api/seed', { body: { reset } });
+    for (;;) {
+      await new Promise(r => setTimeout(r, 900));
+      const s = await api('/api/seed/status');
+      prog.firstElementChild.style.width = (s.total ? 100 * s.done / s.total : 0) + '%';
+      btn.textContent = s.total ? `Loading ${s.done}/${s.total}` : 'Loading...';
+      if (s.error) throw new Error(s.error);
+      if (!s.running) break;
+    }
+    toast('History loaded. Patterns appear after a short consolidation.');
+    await refreshHealth(); await loadTimeline(); loadPatterns(false);
+  } catch (e) { banner('Seeding failed: ' + e.message); }
+  btn.textContent = 'Load 6 months of history'; btn.disabled = false; prog.style.display = 'none';
+}
+$('#seedBtn').onclick = () => runSeed(false);
+$('#resetBtn').onclick = async () => { if (confirm('Delete all memories in this bank and start clean?')) { S.cold = {}; await runSeed(true); $('#hits').innerHTML = '<p class="empty">Nothing recalled yet.</p>'; } };
+
+/* ---------- patterns ---------- */
+async function loadPatterns(refresh) {
+  const btn = $('#patBtn'); btn.disabled = true;
+  try {
+    const p = await api(refresh ? '/api/patterns/refresh' : '/api/patterns', refresh ? { body: {} } : undefined);
+    $('#patBody').innerHTML = md(p.content);
+    $('#patTag').textContent = p.source === 'mental_model' ? 'Hindsight mental model' + (p.refreshed_at ? ' · refreshed ' + p.refreshed_at.slice(0, 16).replace('T', ' ') : '') : 'Generated by Hindsight reflect';
+  } catch (e) { banner(e.message); }
+  btn.disabled = false;
+}
+$('#patBtn').onclick = () => loadPatterns(true);
+
+/* ---------- init ---------- */
+(async function init() {
+  await refreshHealth();
+  try {
+    S.demo = await api('/api/demo-incidents');
+    $('#demoSel').innerHTML = S.demo.map(d => `<option value="${esc(d.id)}">${esc(d.label)}</option>`).join('');
+    loadScenario(S.demo[0].id);
+  } catch (e) { banner(e.message); }
+  await loadTimeline();
+  if (+$('#memCount').textContent > 0) loadPatterns(false);
+})();
+</script>
+</body>
+</html>

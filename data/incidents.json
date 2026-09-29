@@ -1,0 +1,500 @@
+[
+  {
+    "id": "INC-0012",
+    "date": "2026-01-16T17:12:00Z",
+    "service": "checkout-service",
+    "cluster": "db-pool-exhaustion",
+    "title": "Checkout p99 latency 9s and 502s at the ingress",
+    "severity": "SEV1",
+    "symptoms": "p99 latency on POST /checkout jumped from 300ms to 9s. Ingress returning 502s. Order conversion dropped 40%.",
+    "error_signature": "HikariPool-1 - Connection is not available, request timed out after 30000ms",
+    "diagnostic_steps": [
+      {
+        "action": "Checked CPU and memory on checkout pods",
+        "result": "Normal, ruled out resource starvation"
+      },
+      {
+        "action": "Checked Postgres CPU",
+        "result": "Low, database itself was healthy"
+      },
+      {
+        "action": "Looked at Hikari pool metrics",
+        "result": "Active connections pinned at max (20/20), 140 threads waiting"
+      }
+    ],
+    "root_cause": "The 16:45 deploy added a code path that opened a DB connection in the coupon lookup and never released it on the error branch. The pool leaked until exhausted.",
+    "fix": "Rolled back the 16:45 deploy. Follow-up patch used try-with-resources in the coupon lookup. Pool size raised from 20 to 40 as a safety margin.",
+    "owner": "priya.nair",
+    "minutes_to_resolve": 47,
+    "deploy_related": "Deploy at 16:45 on a Friday"
+  },
+  {
+    "id": "INC-0019",
+    "date": "2026-02-20T16:58:00Z",
+    "service": "checkout-service",
+    "cluster": "db-pool-exhaustion",
+    "title": "Cart and checkout requests timing out, thread pool saturated",
+    "severity": "SEV2",
+    "symptoms": "Checkout API responding slowly, then timing out. Alerts on request queue depth. Started about 10 minutes after the weekly release.",
+    "error_signature": "Timeout waiting for connection from pool; pool stats: active=20 idle=0 waiting=212",
+    "diagnostic_steps": [
+      {
+        "action": "Restarted two checkout pods",
+        "result": "Relief for about 4 minutes, then the problem returned"
+      },
+      {
+        "action": "Checked for slow queries in pg_stat_activity",
+        "result": "No long running queries"
+      },
+      {
+        "action": "Diffed the release against the previous version",
+        "result": "New retry wrapper around the payment call holds a connection during retries"
+      }
+    ],
+    "root_cause": "A new retry wrapper kept a DB transaction open while retrying the payment provider call, so connections were held for up to 20 seconds each.",
+    "fix": "Rolled back the release. Moved the payment call outside the DB transaction, then re-released. Added a pool saturation alert at 80 percent.",
+    "owner": "priya.nair",
+    "minutes_to_resolve": 62,
+    "deploy_related": "Weekly release, Friday afternoon"
+  },
+  {
+    "id": "INC-0027",
+    "date": "2026-03-27T17:31:00Z",
+    "service": "orders-service",
+    "cluster": "db-pool-exhaustion",
+    "title": "Order confirmation emails delayed, API latency climbing",
+    "severity": "SEV2",
+    "symptoms": "Order confirmation API slow, 504s from the gateway. Customers report spinner on the order page.",
+    "error_signature": "psycopg2.pool.PoolError: connection pool exhausted",
+    "diagnostic_steps": [
+      {
+        "action": "Scaled orders-service from 6 to 12 pods",
+        "result": "Made it worse, more pods meant more connections and Postgres hit max_connections"
+      },
+      {
+        "action": "Checked deploy history",
+        "result": "Deploy went out 25 minutes before the first alert"
+      },
+      {
+        "action": "Compared connection counts per pod",
+        "result": "Each pod held its full pool of 15 even when idle"
+      }
+    ],
+    "root_cause": "A new ORM version changed the default so idle connections were never returned to the pool. Scaling out multiplied the problem.",
+    "fix": "Rolled back the ORM upgrade, then pinned pool_recycle and max_overflow explicitly. Reduced replicas back to 6.",
+    "owner": "daniel.okafor",
+    "minutes_to_resolve": 71,
+    "deploy_related": "Dependency upgrade shipped on Friday"
+  },
+  {
+    "id": "INC-0041",
+    "date": "2026-05-08T16:40:00Z",
+    "service": "checkout-service",
+    "cluster": "db-pool-exhaustion",
+    "title": "Intermittent 500s on checkout after feature flag rollout",
+    "severity": "SEV2",
+    "symptoms": "Roughly 15 percent of checkout requests failing with 500. Started when the new loyalty points flag reached 50 percent of traffic.",
+    "error_signature": "HikariPool-1 - Connection is not available, request timed out after 30000ms",
+    "diagnostic_steps": [
+      {
+        "action": "Checked recent flag changes",
+        "result": "Loyalty points flag ramped from 10 to 50 percent at 16:30"
+      },
+      {
+        "action": "Disabled the flag",
+        "result": "Errors stopped within 2 minutes"
+      },
+      {
+        "action": "Reviewed loyalty code",
+        "result": "Runs a synchronous lookup that holds a connection for the whole request"
+      }
+    ],
+    "root_cause": "The loyalty lookup borrowed a connection and held it across a slow external call, exhausting the pool as traffic to the flag increased.",
+    "fix": "Kept the flag off. Refactored the lookup to release the connection before the external call, then re-ramped the flag.",
+    "owner": "priya.nair",
+    "minutes_to_resolve": 38,
+    "deploy_related": "Flag rollout on a Friday afternoon"
+  },
+  {
+    "id": "INC-0015",
+    "date": "2026-02-03T09:20:00Z",
+    "service": "search-api",
+    "cluster": "cache-stampede",
+    "title": "Search API latency spike and Elasticsearch CPU at 100 percent",
+    "severity": "SEV2",
+    "symptoms": "Search latency went from 80ms to 6s. Elasticsearch cluster CPU pinned. Redis hit ratio dropped to near zero.",
+    "error_signature": "redis.hit_ratio=0.02 es.search.queue_size=1000 rejected_execution_exception",
+    "diagnostic_steps": [
+      {
+        "action": "Checked Elasticsearch shard health",
+        "result": "Green, no unassigned shards"
+      },
+      {
+        "action": "Checked recent infra changes",
+        "result": "Redis cluster was flushed at 09:12 during a maintenance task"
+      },
+      {
+        "action": "Looked at request patterns",
+        "result": "Thousands of identical popular queries all missing cache at once"
+      }
+    ],
+    "root_cause": "Redis was flushed during maintenance. All keys had the same 10 minute TTL, so everything expired together and every request hit Elasticsearch at once (cache stampede).",
+    "fix": "Enabled request coalescing on the search cache layer and warmed the top 500 queries. Changed TTLs to a base value plus random jitter of 20 percent.",
+    "owner": "mei.tanaka",
+    "minutes_to_resolve": 55,
+    "deploy_related": null
+  },
+  {
+    "id": "INC-0030",
+    "date": "2026-04-02T11:05:00Z",
+    "service": "catalog-service",
+    "cluster": "cache-stampede",
+    "title": "Catalog pages slow after Redis failover",
+    "severity": "SEV2",
+    "symptoms": "Product pages taking 5 to 8 seconds. Database read replica CPU at 95 percent. Cache hit rate collapsed after a Redis failover.",
+    "error_signature": "cache_miss_rate=0.97 replica_cpu=95 slow query: SELECT * FROM products WHERE category_id = ?",
+    "diagnostic_steps": [
+      {
+        "action": "Checked the read replica",
+        "result": "Overloaded with identical category queries"
+      },
+      {
+        "action": "Confirmed Redis failover",
+        "result": "Primary failed over at 10:58 and the new primary started empty"
+      },
+      {
+        "action": "Checked TTL configuration",
+        "result": "All catalog keys share a fixed 15 minute TTL with no jitter"
+      }
+    ],
+    "root_cause": "After the Redis failover the cache was empty and every request went to the read replica at the same time. Fixed TTLs made the recovery wave repeat every 15 minutes.",
+    "fix": "Temporarily rate limited the catalog endpoints and warmed the cache from a script. Added TTL jitter and single-flight locking for cache fills.",
+    "owner": "mei.tanaka",
+    "minutes_to_resolve": 44,
+    "deploy_related": null
+  },
+  {
+    "id": "INC-0046",
+    "date": "2026-06-11T14:47:00Z",
+    "service": "search-api",
+    "cluster": "cache-stampede",
+    "title": "Search latency degraded again after cache key format change",
+    "severity": "SEV3",
+    "symptoms": "Search p95 rose to 3s. Cache hit rate fell from 92 percent to 11 percent right after the 14:30 deploy.",
+    "error_signature": "redis.hit_ratio=0.11 after deploy sha 9c1e4ab",
+    "diagnostic_steps": [
+      {
+        "action": "Checked Elasticsearch",
+        "result": "Elevated load but healthy"
+      },
+      {
+        "action": "Diffed the deploy",
+        "result": "Cache key builder now included a request id, so no two requests shared a key"
+      }
+    ],
+    "root_cause": "A refactor accidentally added a per-request id to the cache key so the cache never hit. Similar load pattern to a stampede, but self inflicted.",
+    "fix": "Reverted the cache key change and added a unit test asserting key stability. Warmed the cache after revert.",
+    "owner": "sam.reyes",
+    "minutes_to_resolve": 29,
+    "deploy_related": "Deploy at 14:30"
+  },
+  {
+    "id": "INC-0022",
+    "date": "2026-03-06T02:14:00Z",
+    "service": "notification-service",
+    "cluster": "kafka-poison-message",
+    "title": "Notification emails and push messages delayed by hours",
+    "severity": "SEV2",
+    "symptoms": "Consumer lag on the order-events topic climbing past 400k. No notifications sent since 01:50.",
+    "error_signature": "org.apache.kafka.common.errors.SerializationException: Error deserializing Avro message for id 7311; consumer group rebalancing repeatedly",
+    "diagnostic_steps": [
+      {
+        "action": "Restarted consumers",
+        "result": "Lag kept growing, consumers crashed again within seconds"
+      },
+      {
+        "action": "Checked consumer logs",
+        "result": "Same offset failing repeatedly, then the group rebalanced"
+      },
+      {
+        "action": "Inspected the message at that offset",
+        "result": "Produced with a schema version that the consumer did not have"
+      }
+    ],
+    "root_cause": "One message written with an incompatible Avro schema version blocked a partition. The consumer crashed on it, restarted, and reprocessed the same offset forever.",
+    "fix": "Skipped the poisoned offset manually, then deployed a dead letter queue handler so undeserializable messages are parked instead of blocking. Added schema compatibility checks in CI.",
+    "owner": "daniel.okafor",
+    "minutes_to_resolve": 96,
+    "deploy_related": null
+  },
+  {
+    "id": "INC-0035",
+    "date": "2026-04-23T03:40:00Z",
+    "service": "notification-service",
+    "cluster": "kafka-poison-message",
+    "title": "Order events consumer stuck, lag growing on partition 3",
+    "severity": "SEV2",
+    "symptoms": "Lag on partition 3 of order-events at 250k while other partitions are healthy. Customers not receiving shipping updates.",
+    "error_signature": "JsonParseException: Unexpected character at offset 1889231, partition 3; consumer group rebalance loop",
+    "diagnostic_steps": [
+      {
+        "action": "Compared lag across partitions",
+        "result": "Only partition 3 was stuck"
+      },
+      {
+        "action": "Checked the consumer error rate",
+        "result": "Exactly one message failing over and over"
+      },
+      {
+        "action": "Looked at the producer of that message",
+        "result": "A partner webhook sent malformed JSON that was passed through unvalidated"
+      }
+    ],
+    "root_cause": "A malformed payload from a partner webhook was published to Kafka without validation and the consumer had no dead letter handling for parse errors.",
+    "fix": "Skipped the offset, replayed the affected window after fixing the payload, and added validation at the producer plus a dead letter topic for parse errors.",
+    "owner": "daniel.okafor",
+    "minutes_to_resolve": 58,
+    "deploy_related": null
+  },
+  {
+    "id": "INC-0049",
+    "date": "2026-07-02T01:55:00Z",
+    "service": "billing-service",
+    "cluster": "kafka-poison-message",
+    "title": "Invoice generation stalled overnight",
+    "severity": "SEV3",
+    "symptoms": "Invoice events not being processed, lag at 90k. Finance noticed missing invoices in the morning.",
+    "error_signature": "SerializationException at offset 552108; consumer restarted 63 times in 40 minutes",
+    "diagnostic_steps": [
+      {
+        "action": "Checked consumer restart count",
+        "result": "Crash looping"
+      },
+      {
+        "action": "Checked the offset",
+        "result": "One event with a null required field"
+      }
+    ],
+    "root_cause": "A single event with a null required field crashed the consumer on every retry and blocked the partition.",
+    "fix": "Skipped the offset, backfilled the invoice manually, and enabled the shared dead letter handler library in billing-service.",
+    "owner": "sam.reyes",
+    "minutes_to_resolve": 41,
+    "deploy_related": null
+  },
+  {
+    "id": "INC-0018",
+    "date": "2026-02-13T13:22:00Z",
+    "service": "payments-gateway",
+    "cluster": "oom-memory-leak",
+    "title": "Payments gateway pods restarting repeatedly",
+    "severity": "SEV1",
+    "symptoms": "Pods OOMKilled every 20 to 30 minutes. Payment success rate dipping during each restart. Memory graph shows a steady climb.",
+    "error_signature": "OOMKilled exit code 137, container memory limit 2Gi, heap growth ~40MB/min",
+    "diagnostic_steps": [
+      {
+        "action": "Raised memory limit from 2Gi to 3Gi",
+        "result": "Only delayed the restarts"
+      },
+      {
+        "action": "Took a heap dump from a pod before it died",
+        "result": "Millions of unreleased HTTP client connection objects"
+      },
+      {
+        "action": "Checked what changed this week",
+        "result": "HTTP client library upgraded from 4.5 to 5.2"
+      }
+    ],
+    "root_cause": "The upgraded HTTP client library created a new connection manager per request because of a changed default, leaking connection objects.",
+    "fix": "Pinned the HTTP client back to 4.5 and shipped a shared client instance in the following release. Added a memory growth alert.",
+    "owner": "lena.fischer",
+    "minutes_to_resolve": 84,
+    "deploy_related": "Dependency upgrade earlier in the week"
+  },
+  {
+    "id": "INC-0037",
+    "date": "2026-05-01T10:09:00Z",
+    "service": "payments-gateway",
+    "cluster": "oom-memory-leak",
+    "title": "Payments gateway OOMKilled again after logging change",
+    "severity": "SEV2",
+    "symptoms": "Restarts every 45 minutes, heap steadily rising. Similar shape to the February incident.",
+    "error_signature": "OOMKilled exit code 137, heap growth ~25MB/min, top allocation: LogEvent buffers",
+    "diagnostic_steps": [
+      {
+        "action": "Checked whether the HTTP client was still pinned",
+        "result": "Yes, pinned, so not the same cause"
+      },
+      {
+        "action": "Heap dump",
+        "result": "Large retained set of log event buffers"
+      },
+      {
+        "action": "Reviewed the new async log appender config",
+        "result": "Unbounded queue size"
+      }
+    ],
+    "root_cause": "A new async logging appender was configured with an unbounded queue. Under load the queue grew without limit and consumed the heap.",
+    "fix": "Set a bounded queue with a discard policy for debug logs and rolled out the fix. Added a check for unbounded queues in config review.",
+    "owner": "lena.fischer",
+    "minutes_to_resolve": 66,
+    "deploy_related": "Config change on Thursday"
+  },
+  {
+    "id": "INC-0052",
+    "date": "2026-08-05T09:33:00Z",
+    "service": "reporting-service",
+    "cluster": "oom-memory-leak",
+    "title": "Reporting service pods OOMKilled during month end exports",
+    "severity": "SEV3",
+    "symptoms": "Pods restarting during large CSV exports. Memory spikes to the limit within minutes of an export starting.",
+    "error_signature": "OOMKilled exit code 137 during GET /exports/monthly",
+    "diagnostic_steps": [
+      {
+        "action": "Checked which endpoint was active",
+        "result": "Monthly export"
+      },
+      {
+        "action": "Reviewed the export code",
+        "result": "Loads the full result set into memory before writing the file"
+      }
+    ],
+    "root_cause": "The export loaded the entire result set into memory instead of streaming it.",
+    "fix": "Switched to streaming with a cursor and chunked writes. Set a memory limit alert.",
+    "owner": "sam.reyes",
+    "minutes_to_resolve": 52,
+    "deploy_related": null
+  },
+  {
+    "id": "INC-0024",
+    "date": "2026-03-13T06:03:00Z",
+    "service": "auth-service",
+    "cluster": "tls-cert-expiry",
+    "title": "Widespread 503s across services, login failing",
+    "severity": "SEV1",
+    "symptoms": "Login and token refresh failing everywhere. Downstream services returning 503 upstream connect error.",
+    "error_signature": "x509: certificate has expired or is not yet valid: current time 2026-03-13T06:03:11Z is after 2026-03-13T06:00:00Z",
+    "diagnostic_steps": [
+      {
+        "action": "Checked auth-service pods",
+        "result": "Healthy and running"
+      },
+      {
+        "action": "Checked service mesh logs",
+        "result": "mTLS handshake failures to auth-service"
+      },
+      {
+        "action": "Inspected the certificate",
+        "result": "Internal CA issued cert expired at 06:00 UTC"
+      }
+    ],
+    "root_cause": "The internal mTLS certificate for auth-service expired. The renewal job had been failing silently for two weeks because of a permissions change.",
+    "fix": "Manually issued and rotated a new certificate. Fixed the renewal job permissions and added an alert for certificates expiring within 14 days.",
+    "owner": "amir.haddad",
+    "minutes_to_resolve": 33,
+    "deploy_related": null
+  },
+  {
+    "id": "INC-0044",
+    "date": "2026-06-05T05:58:00Z",
+    "service": "gateway",
+    "cluster": "tls-cert-expiry",
+    "title": "Partner API calls failing with TLS handshake errors",
+    "severity": "SEV2",
+    "symptoms": "Several partners reported TLS handshake failures against the public API gateway. Internal traffic unaffected.",
+    "error_signature": "SSL_ERROR_BAD_CERT_DOMAIN; certificate expired 2026-06-05T05:00:00Z",
+    "diagnostic_steps": [
+      {
+        "action": "Verified from an external host",
+        "result": "Handshake fails, cert expired"
+      },
+      {
+        "action": "Checked cert-manager",
+        "result": "Renewal challenge failing because a DNS record changed"
+      }
+    ],
+    "root_cause": "The public certificate could not renew because the ACME DNS challenge record was removed during a DNS cleanup.",
+    "fix": "Restored the DNS challenge record, forced renewal, and added the challenge record to the DNS cleanup allowlist. Alerting now covers all cert-manager certificates.",
+    "owner": "amir.haddad",
+    "minutes_to_resolve": 27,
+    "deploy_related": null
+  },
+  {
+    "id": "INC-0033",
+    "date": "2026-04-14T15:26:00Z",
+    "service": "platform",
+    "cluster": "dns-throttling",
+    "title": "Intermittent DNS resolution failures across services",
+    "severity": "SEV2",
+    "symptoms": "Random name resolution errors, mostly from high traffic services. Retries succeeded.",
+    "error_signature": "getaddrinfo EAI_AGAIN; CoreDNS dropped packets, conntrack table full on node",
+    "diagnostic_steps": [
+      {
+        "action": "Checked CoreDNS pods",
+        "result": "CPU throttled"
+      },
+      {
+        "action": "Checked node conntrack",
+        "result": "Table near full on busy nodes"
+      }
+    ],
+    "root_cause": "CoreDNS was CPU throttled and the node conntrack table filled up under peak load.",
+    "fix": "Increased CoreDNS replicas and CPU limits, enabled NodeLocal DNSCache, and raised the conntrack limit.",
+    "owner": "amir.haddad",
+    "minutes_to_resolve": 74,
+    "deploy_related": null
+  },
+  {
+    "id": "INC-0039",
+    "date": "2026-05-15T22:10:00Z",
+    "service": "logging-pipeline",
+    "cluster": "disk-full",
+    "title": "Logs missing from dashboards, ingest nodes unhealthy",
+    "severity": "SEV3",
+    "symptoms": "Log ingestion lagging and then dropping. Dashboards empty for the last 40 minutes.",
+    "error_signature": "No space left on device: /var/lib/logstore",
+    "diagnostic_steps": [
+      {
+        "action": "Checked node disk",
+        "result": "100 percent used on the log volume"
+      },
+      {
+        "action": "Checked retention",
+        "result": "Retention job had been paused during a migration"
+      }
+    ],
+    "root_cause": "The retention cleanup job was paused during a migration and never resumed, so the log volume filled.",
+    "fix": "Resumed the cleanup job, freed space, and added a disk usage alert at 80 percent.",
+    "owner": "lena.fischer",
+    "minutes_to_resolve": 36,
+    "deploy_related": null
+  },
+  {
+    "id": "INC-0047",
+    "date": "2026-07-09T12:41:00Z",
+    "service": "web-frontend",
+    "cluster": "bad-feature-flag",
+    "title": "Homepage blank for users on Safari",
+    "severity": "SEV2",
+    "symptoms": "Homepage rendering blank for about 20 percent of users, all on Safari. No backend errors.",
+    "error_signature": "TypeError: undefined is not a function (evaluating 'arr.at(-1)') in bundle.js",
+    "diagnostic_steps": [
+      {
+        "action": "Checked backend dashboards",
+        "result": "All normal"
+      },
+      {
+        "action": "Checked frontend error tracking",
+        "result": "Errors only on older Safari versions"
+      },
+      {
+        "action": "Checked flags",
+        "result": "New homepage flag enabled 15 minutes earlier"
+      }
+    ],
+    "root_cause": "The new homepage code used a JavaScript method unsupported by older Safari and the flag exposed it to all users at once.",
+    "fix": "Turned the flag off. Added a polyfill and a Safari browser check to the release checklist.",
+    "owner": "sam.reyes",
+    "minutes_to_resolve": 22,
+    "deploy_related": "Flag rollout"
+  }
+]

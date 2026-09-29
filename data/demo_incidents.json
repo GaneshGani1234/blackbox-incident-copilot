@@ -1,0 +1,46 @@
+[
+  {
+    "id": "DEMO-A",
+    "label": "1. Checkout is slowing down (the recurring one)",
+    "date": "2026-09-25T16:52:00Z",
+    "service": "checkout-service",
+    "severity": "SEV1",
+    "title": "Checkout API latency climbing, 502s from ingress",
+    "symptoms": "p99 latency on POST /checkout went from 280ms to 7s in ten minutes. Ingress returning 502s. A deploy went out at 16:41.",
+    "error_signature": "HikariPool-1 - Connection is not available, request timed out after 30000ms",
+    "expected_cluster": "db-pool-exhaustion"
+  },
+  {
+    "id": "DEMO-B",
+    "label": "2. Search is crawling after a cache flush",
+    "date": "2026-09-26T10:15:00Z",
+    "service": "search-api",
+    "severity": "SEV2",
+    "title": "Search latency spike, Elasticsearch CPU pinned",
+    "symptoms": "Search results taking 5 to 7 seconds. Redis hit ratio near zero right after a maintenance flush. Elasticsearch rejecting queries.",
+    "error_signature": "redis.hit_ratio=0.03 rejected_execution_exception",
+    "expected_cluster": "cache-stampede"
+  },
+  {
+    "id": "DEMO-C",
+    "label": "3. Something the team has never seen",
+    "date": "2026-09-27T20:05:00Z",
+    "service": "inventory-service",
+    "severity": "SEV2",
+    "title": "Inventory counts drifting negative for a subset of SKUs",
+    "symptoms": "A few hundred SKUs show negative stock. No errors in logs. Only affects SKUs in the EU warehouse.",
+    "error_signature": "none, invariants check failing: stock_on_hand < 0",
+    "expected_cluster": "none"
+  },
+  {
+    "id": "DEMO-D",
+    "label": "4. Same pattern, different service (generalisation)",
+    "date": "2026-09-28T17:05:00Z",
+    "service": "inventory-service",
+    "severity": "SEV2",
+    "title": "Inventory API timeouts after Friday release",
+    "symptoms": "Inventory reads timing out about 12 minutes after the 16:50 release. Pods look healthy. Threads waiting.",
+    "error_signature": "Timeout waiting for connection from pool; active=25 idle=0 waiting=180",
+    "expected_cluster": "db-pool-exhaustion"
+  }
+]

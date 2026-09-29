@@ -1,0 +1,50 @@
+[
+  {
+    "id": "EVAL-1",
+    "service": "checkout-service",
+    "title": "Checkout slow after evening release",
+    "symptoms": "502s at ingress, latency 8s, deploy 20 minutes ago.",
+    "error_signature": "Connection is not available, request timed out after 30000ms",
+    "expected_cluster": "db-pool-exhaustion"
+  },
+  {
+    "id": "EVAL-2",
+    "service": "orders-service",
+    "title": "Order API 504s, DB connections maxed",
+    "symptoms": "Pool exhausted, threads waiting, started after dependency bump.",
+    "error_signature": "connection pool exhausted",
+    "expected_cluster": "db-pool-exhaustion"
+  },
+  {
+    "id": "EVAL-3",
+    "service": "search-api",
+    "title": "Search slow after Redis restart",
+    "symptoms": "Cache empty after restart, Elasticsearch overloaded by identical queries.",
+    "error_signature": "hit_ratio=0.01 rejected_execution_exception",
+    "expected_cluster": "cache-stampede"
+  },
+  {
+    "id": "EVAL-4",
+    "service": "notification-service",
+    "title": "Push notifications stopped, lag growing",
+    "symptoms": "One partition stuck, consumer crash looping on the same offset.",
+    "error_signature": "SerializationException at offset",
+    "expected_cluster": "kafka-poison-message"
+  },
+  {
+    "id": "EVAL-5",
+    "service": "payments-gateway",
+    "title": "Pods keep restarting with exit 137",
+    "symptoms": "Heap climbs steadily until OOMKilled, restarts every half hour.",
+    "error_signature": "OOMKilled exit code 137",
+    "expected_cluster": "oom-memory-leak"
+  },
+  {
+    "id": "EVAL-6",
+    "service": "auth-service",
+    "title": "Login failing, handshake errors between services",
+    "symptoms": "mTLS failures to auth-service, sudden and cluster wide.",
+    "error_signature": "x509: certificate has expired",
+    "expected_cluster": "tls-cert-expiry"
+  }
+]
